@@ -1,32 +1,22 @@
 """
-Data preparation for the MEMS gyroscope denoising benchmark.
+Data preparation for the gyroscope denoising benchmark.
 
-The recording in data/raw/ is a single manoeuvre measured with an MPU-6050.
-There is no ground truth: nobody recorded the true tilt at each sample, so a
-reference curve has to be constructed before any supervised model can be
-trained.
+There is no ground truth for this recording: nobody measured the true tilt at
+each sample. A reference curve is therefore constructed with a Savitzky-Golay
+filter, following the reference-curve method used in Krijestorac (2025),
+INFOTEH-JAHORINA. Whatever remains after subtracting that curve is treated as
+the noise component.
 
-This module does three things:
+The reference curve is an approximation of the truth, not the truth itself.
+A smoother always absorbs some noise into the fit and leaves some signal in
+the residual, so every result in this repository inherits that limitation.
 
-1. Fits a smooth reference curve with a Savitzky-Golay filter, following the
-   reference-curve methodology used in Krijestorac (2025), INFOTEH-JAHORINA.
-2. Treats the leftover residual as the noise component and measures its
-   statistics, so that later stages can generate fresh noise with the same
-   character. The statistics here are descriptive only. An AR(1) fit is
-   computed and reported because it is the obvious first model to try, but the
-   diagnostic table shows it does not describe this residual: the measured
-   autocorrelation turns negative from lag 3 onward, which no AR(1) process
-   with a positive coefficient can produce. Noise generation therefore uses a
-   non-parametric surrogate method (see noise_model.py), which reproduces the
-   measured power spectrum without committing to a parametric model.
-3. Sweeps the Savitzky-Golay window length so the chosen value is a documented
-   decision rather than an arbitrary one.
-
-Known limitation: the residual is not exactly the sensor noise. A smoothing
-filter always absorbs a little noise into the fitted curve and leaves a little
-signal in the residual. The reference curve is therefore an approximation of
-the truth, not the truth. Every result in this repository should be read with
-that in mind.
+Outputs
+-------
+data/processed/reference_and_residual.csv : the three aligned series
+data/processed/noise_stats.json           : statistics used by noise.py
+results/tables/sg_window_sweep.csv        : evidence for the window choice
+results/figures/01_reference_and_residual.png
 """
 
 from __future__ import annotations
@@ -35,11 +25,13 @@ import json
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.signal import savgol_filter, welch
+from scipy import stats
+from scipy.signal import savgol_filter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_CSV = PROJECT_ROOT / "data" / "raw" / "gyro_x_500_fitted.csv"
@@ -49,25 +41,22 @@ TABLES_DIR = PROJECT_ROOT / "results" / "tables"
 
 SIGNAL_COLUMN = "gyro_x_dps"
 
-# Savitzky-Golay settings for the reference curve. The window is chosen from
-# the sweep in sweep_window_lengths(); see the README for the reasoning.
-SG_WINDOW = 31
+SG_WINDOW = 25
 SG_POLYORDER = 3
-
 CANDIDATE_WINDOWS = (9, 15, 21, 31, 41, 51, 71, 101)
+
+# Window used to measure how the noise level varies along the recording.
+ENVELOPE_WINDOW = 41
 
 
 def load_recording(path: Path = RAW_CSV) -> np.ndarray:
     """Load the single-column recording as a 1D float array."""
     if not path.exists():
-        raise FileNotFoundError(
-            f"Recording not found at {path}. "
-            "Check that the CSV sits in data/raw/."
-        )
+        raise FileNotFoundError(f"Recording not found at {path}.")
     frame = pd.read_csv(path)
     if SIGNAL_COLUMN not in frame.columns:
         raise KeyError(
-            f"Expected column '{SIGNAL_COLUMN}', found {list(frame.columns)}."
+            f"Expected column '{SIGNAL_COLUMN}', got {list(frame.columns)}."
         )
     signal = frame[SIGNAL_COLUMN].to_numpy(dtype=np.float64)
     if np.isnan(signal).any():
@@ -76,11 +65,9 @@ def load_recording(path: Path = RAW_CSV) -> np.ndarray:
 
 
 def fit_reference_curve(
-    signal: np.ndarray,
-    window: int = SG_WINDOW,
-    polyorder: int = SG_POLYORDER,
+    signal: np.ndarray, window: int = SG_WINDOW, polyorder: int = SG_POLYORDER
 ) -> np.ndarray:
-    """Fit a smooth reference curve, used as the training target."""
+    """Fit the smooth reference curve used as the ground truth."""
     if window % 2 == 0:
         raise ValueError("Savitzky-Golay window length must be odd.")
     if window <= polyorder:
@@ -88,125 +75,103 @@ def fit_reference_curve(
     return savgol_filter(signal, window_length=window, polyorder=polyorder)
 
 
-def characterise_noise(residual: np.ndarray) -> dict[str, float]:
-    """Measure descriptive statistics of the noise component.
-
-    The residual is clearly not white: consecutive samples are correlated.
-    An AR(1) coefficient is estimated by the lag-1 sample autocorrelation
-    (the Yule-Walker estimator for order one) and the corresponding
-    innovation standard deviation is recovered from the standard identity
-    sigma_x = sigma_e / sqrt(1 - phi^2).
-
-    These values are reported for description and comparison, not because
-    AR(1) is an adequate model for this residual. See ar1_diagnostic().
-    """
-    centred = residual - residual.mean()
-    sigma = float(centred.std(ddof=1))
-    phi = float(np.corrcoef(centred[:-1], centred[1:])[0, 1])
-    innovation_sigma = float(sigma * np.sqrt(max(1.0 - phi**2, 1e-12)))
-
-    return {
-        "residual_std": sigma,
-        "residual_mean": float(residual.mean()),
-        "ar1_coefficient": phi,
-        "innovation_std": innovation_sigma,
-        "variance_of_first_differences": float(np.var(np.diff(residual), ddof=1)),
-        "n_samples": int(residual.size),
-    }
-
-
-def autocorrelation(series: np.ndarray, max_lag: int = 10) -> list[float]:
-    """Autocorrelation at lags 1..max_lag, for diagnostics."""
-    centred = series - series.mean()
-    return [
-        float(np.corrcoef(centred[:-lag], centred[lag:])[0, 1])
-        for lag in range(1, max_lag + 1)
-    ]
-
-
-def ar1_diagnostic(residual: np.ndarray, max_lag: int = 8) -> pd.DataFrame:
-    """Compare the measured autocorrelation against the AR(1) prediction.
-
-    An AR(1) process with coefficient phi has autocorrelation phi**k at lag k,
-    which is strictly positive and monotonically decaying for positive phi.
-    Tabulating the measured values against that prediction documents whether
-    the model is usable. For this recording it is not, and the table is the
-    evidence for preferring a non-parametric noise generator.
-    """
-    measured = np.asarray(autocorrelation(residual, max_lag=max_lag))
-    phi = measured[0]
-    lags = np.arange(1, max_lag + 1)
-    predicted = phi ** lags
-    return pd.DataFrame(
-        {
-            "lag": lags,
-            "measured_autocorr": measured,
-            "ar1_predicted": predicted,
-            "absolute_error": np.abs(measured - predicted),
-        }
-    )
-
-
-def residual_spectrum(residual: np.ndarray) -> pd.DataFrame:
-    """Power spectral density of the residual, in cycles per sample.
-
-    The sampling rate of the recording is not encoded in the CSV, so
-    frequencies are reported in normalised units. Multiply by the true
-    sampling rate to convert to hertz.
-    """
-    freqs, power = welch(residual - residual.mean(), fs=1.0, nperseg=128)
-    return pd.DataFrame({"cycles_per_sample": freqs, "power": power})
-
-
 def sweep_window_lengths(signal: np.ndarray) -> pd.DataFrame:
-    """Compare candidate window lengths.
+    """Compare candidate window lengths so the chosen one is justified.
 
-    A window that is too short lets the reference curve chase the noise, which
-    shrinks the residual and destroys the very thing we want to measure. A
-    window that is too long flattens genuine movement, which inflates the
-    residual with real signal. The useful window sits where the residual
-    standard deviation stops changing quickly.
+    Too short and the reference curve chases the noise, shrinking the residual.
+    Too long and it flattens real movement, so genuine signal leaks into the
+    residual. The usable window is where the residual standard deviation stops
+    changing quickly.
     """
     rows = []
     for window in CANDIDATE_WINDOWS:
-        curve = fit_reference_curve(signal, window=window)
-        residual = signal - curve
+        residual = signal - fit_reference_curve(signal, window=window)
         rows.append(
             {
                 "window": window,
                 "residual_std": residual.std(ddof=1),
-                "curve_std": curve.std(ddof=1),
                 "residual_lag1_autocorr": np.corrcoef(
                     residual[:-1], residual[1:]
                 )[0, 1],
             }
         )
-    frame = pd.DataFrame(rows)
-    frame["snr_db"] = 20 * np.log10(frame["curve_std"] / frame["residual_std"])
-    return frame
+    return pd.DataFrame(rows)
+
+
+def fit_noise_envelope(
+    reference: np.ndarray, residual: np.ndarray, window: int = ENVELOPE_WINDOW
+) -> dict[str, float]:
+    """Fit how the noise level varies with the signal level.
+
+    MEMS gyroscope error is conventionally split into a constant floor plus a
+    component proportional to the measurement. Measuring the local noise
+    standard deviation in sliding windows and regressing it on the reference
+    level recovers exactly that: the intercept is the floor, the slope is the
+    proportional term.
+
+    Without this, synthetic noise would be flat across the recording while the
+    real noise is several times larger at full tilt than at rest.
+    """
+    half = window // 2
+    centres = np.arange(half, residual.size - half)
+    local_std = np.array(
+        [residual[i - half : i + half + 1].std(ddof=1) for i in centres]
+    )
+    local_level = reference[centres]
+
+    slope, intercept = np.polyfit(local_level, local_std, 1)
+    predicted = slope * local_level + intercept
+    r_squared = 1.0 - np.var(local_std - predicted) / np.var(local_std)
+
+    return {
+        "envelope_slope": float(slope),
+        "envelope_intercept": float(intercept),
+        "envelope_r_squared": float(r_squared),
+    }
+
+
+def characterise_noise(residual: np.ndarray) -> dict[str, float]:
+    """Describe the noise well enough to reproduce it.
+
+    Two properties rule out white Gaussian noise as a training signal:
+    consecutive samples are correlated, and the distribution is skewed with
+    heavy tails. noise.py uses a method that preserves both.
+    """
+    return {
+        "residual_std": float(residual.std(ddof=1)),
+        "residual_mean": float(residual.mean()),
+        "lag1_autocorrelation": float(
+            np.corrcoef(residual[:-1], residual[1:])[0, 1]
+        ),
+        "skewness": float(stats.skew(residual)),
+        "excess_kurtosis": float(stats.kurtosis(residual)),
+        "n_samples": int(residual.size),
+    }
 
 
 def plot_overview(
     signal: np.ndarray,
-    curve: np.ndarray,
+    reference: np.ndarray,
     residual: np.ndarray,
     path: Path,
+    window: int,
+    polyorder: int,
 ) -> None:
-    """Save a two-panel figure: recording with reference curve, and residual."""
+    """Save the recording with its reference curve, and the residual below."""
     fig, axes = plt.subplots(
         2, 1, figsize=(10, 6), sharex=True, height_ratios=[2, 1]
     )
 
     axes[0].plot(signal, lw=0.8, color="#888780", label="raw measurement")
     axes[0].plot(
-        curve,
+        reference,
         lw=1.8,
         color="#185FA5",
-        label=f"Savitzky-Golay reference ({SG_WINDOW}, {SG_POLYORDER})",
+        label=f"Savitzky-Golay reference ({window}, {polyorder})",
     )
     axes[0].set_ylabel("gyro x")
     axes[0].legend(frameon=False)
-    axes[0].set_title("MPU-6050 recording and constructed reference curve")
+    axes[0].set_title("Recording and constructed reference curve")
 
     axes[1].plot(residual, lw=0.7, color="#D85A30")
     axes[1].axhline(0.0, color="#444441", lw=0.6)
@@ -225,79 +190,66 @@ def plot_overview(
 
 
 def main() -> None:
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    for directory in (PROCESSED_DIR, FIGURES_DIR, TABLES_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
 
     signal = load_recording()
-    print(f"Loaded {signal.size} samples from {RAW_CSV.name}")
+    print(f"Loaded {signal.size} samples")
     print(
         f"  range {signal.min():.2f} to {signal.max():.2f}, "
-        f"mean {signal.mean():.3f}, std {signal.std(ddof=1):.3f}"
+        f"std {signal.std(ddof=1):.3f}"
     )
 
-    print("\nWindow length sweep:")
     sweep = sweep_window_lengths(signal)
+    print("\nWindow length sweep:")
     print(sweep.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
     sweep.to_csv(TABLES_DIR / "sg_window_sweep.csv", index=False)
 
-    curve = fit_reference_curve(signal)
-    residual = signal - curve
-    stats = characterise_noise(residual)
+    reference = fit_reference_curve(signal)
+    residual = signal - reference
 
-    raw_first_diff_var = float(np.var(np.diff(signal), ddof=1))
+    noise_stats = characterise_noise(residual)
+    noise_stats.update(fit_noise_envelope(reference, residual))
+    noise_stats["sg_window"] = SG_WINDOW
+    noise_stats["sg_polyorder"] = SG_POLYORDER
 
-    print(f"\nChosen window: {SG_WINDOW}, polynomial order {SG_POLYORDER}")
-    print(
-        "Variance of first differences of the raw recording: "
-        f"{raw_first_diff_var:.4f}"
-    )
-    print("  (the smoothness metric used in Krijestorac 2025, INFOTEH)")
+    print(f"\nChosen window {SG_WINDOW}, polynomial order {SG_POLYORDER}")
     print("Noise statistics:")
-    for key, value in stats.items():
-        print(f"  {key:32s} {value}")
+    for key, value in noise_stats.items():
+        formatted = f"{value:.4f}" if isinstance(value, float) else str(value)
+        print(f"  {key:22s} {formatted}")
 
-    lags = autocorrelation(residual, max_lag=6)
-    print("  residual autocorrelation lags 1-6  "
-          f"{[round(v, 3) for v in lags]}")
-
-    print("\nAR(1) adequacy check:")
-    diagnostic = ar1_diagnostic(residual)
-    print(diagnostic.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
     print(
-        f"  worst absolute error {diagnostic['absolute_error'].max():.3f} "
-        "-- AR(1) is not an adequate model for this residual"
+        f"\n  Correlated (lag-1 {noise_stats['lag1_autocorrelation']:.2f}) and "
+        f"skewed ({noise_stats['skewness']:+.2f}): white Gaussian noise would"
     )
-    diagnostic.to_csv(TABLES_DIR / "ar1_diagnostic.csv", index=False)
-
-    spectrum = residual_spectrum(residual)
-    spectrum.to_csv(TABLES_DIR / "residual_spectrum.csv", index=False)
-    peak = spectrum.loc[spectrum["power"].idxmax(), "cycles_per_sample"]
-    print(f"  residual spectral peak at {peak:.4f} cycles/sample")
-
-    processed = pd.DataFrame(
-        {"raw": signal, "reference": curve, "residual": residual}
+    print("  not be a fair training signal. It also grows with the measurement:")
+    print(
+        f"  std = {noise_stats['envelope_slope']:.4f} * level + "
+        f"{noise_stats['envelope_intercept']:.4f}  "
+        f"(R^2 = {noise_stats['envelope_r_squared']:.3f})"
     )
-    processed.to_csv(PROCESSED_DIR / "reference_and_residual.csv", index=False)
 
-    stats["raw_variance_of_first_differences"] = raw_first_diff_var
-    stats["sg_window"] = SG_WINDOW
-    stats["sg_polyorder"] = SG_POLYORDER
-    stats["residual_autocorrelation_lags_1_to_6"] = lags
+    pd.DataFrame(
+        {"raw": signal, "reference": reference, "residual": residual}
+    ).to_csv(PROCESSED_DIR / "reference_and_residual.csv", index=False)
+
     with open(PROCESSED_DIR / "noise_stats.json", "w", encoding="utf-8") as handle:
-        json.dump(stats, handle, indent=2)
+        json.dump(noise_stats, handle, indent=2)
 
     plot_overview(
-        signal, curve, residual, FIGURES_DIR / "01_reference_and_residual.png"
+        signal,
+        reference,
+        residual,
+        FIGURES_DIR / "01_reference_and_residual.png",
+        SG_WINDOW,
+        SG_POLYORDER,
     )
 
-    print("\nWrote:")
-    print("  data/processed/reference_and_residual.csv")
-    print("  data/processed/noise_stats.json")
-    print("  results/tables/sg_window_sweep.csv")
-    print("  results/tables/ar1_diagnostic.csv")
-    print("  results/tables/residual_spectrum.csv")
-    print("  results/figures/01_reference_and_residual.png")
+    print(
+        "\nWrote reference_and_residual.csv, noise_stats.json, "
+        "sg_window_sweep.csv, 01_reference_and_residual.png"
+    )
 
 
 if __name__ == "__main__":
