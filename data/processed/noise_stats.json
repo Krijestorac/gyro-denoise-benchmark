@@ -1,0 +1,19 @@
+{
+  "residual_std": 0.16653262181422726,
+  "residual_mean": -0.00018679846284565805,
+  "ar1_coefficient": 0.5095591478987436,
+  "innovation_std": 0.1432906015036165,
+  "variance_of_first_differences": 0.027254330970403706,
+  "n_samples": 500,
+  "raw_variance_of_first_differences": 0.02903011887228272,
+  "sg_window": 31,
+  "sg_polyorder": 3,
+  "residual_autocorrelation_lags_1_to_6": [
+    0.5095591478987436,
+    0.12498617820005255,
+    -0.041416651324999006,
+    -0.20380037339888338,
+    -0.32973390233652833,
+    -0.37973095879938473
+  ]
+}
