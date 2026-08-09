@@ -1,13 +1,17 @@
 {
-  "residual_std": 0.165880136240238,
-  "residual_mean": -0.00012909565216857787,
-  "lag1_autocorrelation": 0.49031139579483124,
-  "skewness": 0.4177807959567931,
-  "excess_kurtosis": 1.2033048470608279,
-  "n_samples": 500,
-  "envelope_slope": 0.021238536810134764,
-  "envelope_intercept": 0.06879107096063318,
-  "envelope_r_squared": 0.7808894806951782,
+  "residual_std": 0.1931967123719675,
+  "residual_mean": -0.0022822570048242293,
+  "lag1_autocorrelation": 0.4849463265931509,
+  "skewness": 0.43696396981205454,
+  "excess_kurtosis": 0.6716300874365082,
+  "n_samples": 250,
+  "envelope_slope": 0.024012726546603778,
+  "envelope_intercept": 0.07265234490753905,
+  "envelope_r_squared": 0.8796597664277371,
+  "envelope_r_squared_vs_speed": 2.9556935776442472e-05,
+  "level_speed_correlation": -0.06726643222687666,
   "sg_window": 25,
-  "sg_polyorder": 3
+  "sg_polyorder": 3,
+  "fit_end": 250,
+  "n_total_samples": 500
 }

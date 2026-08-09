@@ -1,8 +1,8 @@
-method,rmse
-"Bessel(o=4, fc=5.0Hz)",0.04194694631895406
-"Butterworth(o=4, fc=3.0Hz)",0.05537000666293399
-ConvDenoiser,0.09255638023775103
-EMA(a=0.35),0.11585561432458515
-MovingAverage(w=5),0.1236418178362938
-"Kalman(Q=0.001, R=0.01)",0.1285561182514922
-"(raw, unfiltered)",0.165714223365314
+method,phase,rmse
+"Kalman(Q=0.001, R=0.01)",zero-phase,0.035821311053607856
+EMA(a=0.2),zero-phase,0.03799242947592635
+"Bessel(o=4, fc=4.0Hz)",zero-phase,0.05341461636013006
+MovingAverage(w=21),zero-phase,0.06760895512178706
+"Butterworth(o=4, fc=2.0Hz)",zero-phase,0.07394024344259531
+ConvDenoiser,non-causal,0.12260978798252042
+"(raw, unfiltered)",-,0.13319733166040107

@@ -1,6 +1,11 @@
-filter,chosen_parameter,tuning_rmse
-Bessel,5.0,0.01610944033919241
-Butterworth,3.0,0.007286667521368199
-MovingAverage,5.0,0.13330780920981464
-EMA,0.35,0.12401853798916897
-Kalman,0.001,0.1389942766470515
+filter,phase,chosen_parameter,tuning_rmse,grid_min,grid_max,at_grid_edge
+Bessel,causal,30.0,0.17402889977346822,1.0,40.0,False
+Butterworth,causal,20.0,0.1828320283759494,1.0,40.0,False
+MovingAverage,causal,5.0,0.1548342873900844,3.0,51.0,False
+EMA,causal,0.35,0.148191346329925,0.02,1.0,False
+Kalman,causal,0.01,0.15996471359399045,1e-06,7.0,False
+Bessel,zero-phase,4.0,0.06795530272651071,1.0,40.0,False
+Butterworth,zero-phase,2.0,0.06833992011627069,1.0,40.0,False
+MovingAverage,zero-phase,21.0,0.06538468339271165,3.0,51.0,False
+EMA,zero-phase,0.2,0.07725611038675323,0.02,1.0,False
+Kalman,zero-phase,0.001,0.08873112716813897,1e-06,7.0,False

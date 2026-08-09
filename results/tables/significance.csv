@@ -1,0 +1,6 @@
+comparison,median_rmse_difference,network_better_on,of_signals,wilcoxon_statistic,p_raw,p_holm,verdict
+"ConvDenoiser vs Bessel(o=4, fc=4.0Hz)",-0.04303182751188395,0,100,0.0,3.896559845095909e-18,1.9482799225479547e-17,network worse
+"ConvDenoiser vs Butterworth(o=4, fc=2.0Hz)",-0.04157927151843625,0,100,0.0,3.896559845095909e-18,1.9482799225479547e-17,network worse
+ConvDenoiser vs MovingAverage(w=21),-0.045219216886577054,0,100,0.0,3.896559845095909e-18,1.9482799225479547e-17,network worse
+ConvDenoiser vs EMA(a=0.2),-0.03402144167570475,0,100,0.0,3.896559845095909e-18,1.9482799225479547e-17,network worse
+"ConvDenoiser vs Kalman(Q=0.001, R=0.01)",-0.02265518913684827,0,100,0.0,3.896559845095909e-18,1.9482799225479547e-17,network worse
