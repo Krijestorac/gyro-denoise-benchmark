@@ -17,8 +17,13 @@ weights are adjusted until its output matches the clean one. Convolution
 restricts it to local, position-independent operations, which biases it
 towards smooth outputs.
 
-The class implements the same `Denoiser` interface as the classical filters,
-so the benchmark treats it identically.
+The class implements the same `Denoiser` interface as the classical filters, so
+the benchmark treats it identically.
+
+It is NOT causal: a convolution centred on sample k uses samples on both sides
+of k. That is why filters.py gives every classical filter a zero-phase mode,
+why `phase` below reports "non-causal" so no results table can imply otherwise,
+and why evaluate.py reports a separate causal table with this model absent.
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ from filters import Denoiser
 SIGNAL_SCALE = 10.0
 
 # The network halves the length three times, so the input length must be
-# divisible by 8. Recordings of 500 samples are reflection-padded to 512 and
+# divisible by 8. Recordings of 500 samples are reflection-padded to 504 and
 # cropped back afterwards.
 LENGTH_MULTIPLE = 8
 
@@ -55,52 +60,6 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
     )
 
 
-class ConvDenoiser(nn.Module):
-    """Encoder-decoder 1D convolutional network."""
-
-    def __init__(self, base_channels: int = 16) -> None:
-        super().__init__()
-        c1, c2 = base_channels, base_channels * 2
-
-        self.encoder_1 = _conv_block(1, c1)
-        self.encoder_2 = _conv_block(c1, c2)
-        self.encoder_3 = _conv_block(c2, c2)
-        self.downsample = nn.MaxPool1d(2)
-
-        self.decoder_1 = _conv_block(c2, c2)
-        self.decoder_2 = _conv_block(c2, c1)
-        self.upsample = nn.Upsample(scale_factor=2, mode="linear", align_corners=False)
-
-        self.output = nn.Conv1d(c1, 1, KERNEL_SIZE, padding=KERNEL_SIZE // 2)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Map (batch, 1, length) noisy signals to denoised signals.
-
-        Padding happens here rather than in the caller so that training and
-        inference cannot disagree about it. Three halvings followed by three
-        doublings only returns the original length when that length divides by
-        eight; 500 samples would come back as 496.
-        """
-        original_length = x.shape[-1]
-        left, right = _padding_for(original_length)
-        if left or right:
-            x = F.pad(x, (left, right), mode="reflect")
-
-        x = self.downsample(self.encoder_1(x))
-        x = self.downsample(self.encoder_2(x))
-        x = self.downsample(self.encoder_3(x))
-
-        x = self.decoder_1(self.upsample(x))
-        x = self.decoder_2(self.upsample(x))
-        x = self.upsample(x)
-
-        x = self.output(x)
-        return x[..., left : left + original_length]
-
-    def parameter_count(self) -> int:
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
-
-
 def _padding_for(length: int, multiple: int = LENGTH_MULTIPLE) -> tuple[int, int]:
     """How much reflection padding a signal of this length needs.
 
@@ -114,16 +73,81 @@ def _padding_for(length: int, multiple: int = LENGTH_MULTIPLE) -> tuple[int, int
     return total // 2, total - total // 2
 
 
+class ConvDenoiser(nn.Module):
+    """Encoder-decoder 1D convolutional network."""
+
+    def __init__(self, base_channels: int = 16) -> None:
+        super().__init__()
+        c1, c2 = base_channels, base_channels * 2
+
+        self.encoder_1 = _conv_block(1, c1)
+        self.encoder_2 = _conv_block(c1, c2)
+        self.encoder_3 = _conv_block(c2, c2)
+        self.downsample = nn.AvgPool1d(2)
+
+        self.decoder_1 = _conv_block(c2, c2)
+        self.decoder_2 = _conv_block(c2, c2)
+        self.decoder_3 = _conv_block(c2, c1)
+        self.upsample = nn.Upsample(
+            scale_factor=2, mode="linear", align_corners=False
+        )
+
+        self.output = nn.Conv1d(c1, 1, KERNEL_SIZE, padding=KERNEL_SIZE // 2)
+
+       
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Map (batch, 1, length) noisy signals to denoised signals.
+
+        Padding happens here rather than in the caller so that training and
+        inference cannot disagree about it. Three halvings followed by three
+        doublings only return the original length when that length divides by
+        eight; 500 samples would come back as 496.
+
+        The last layer is added to the input rather than replacing it, so the
+        network learns to predict the NOISE and subtract it. This is standard
+        for denoising, and it also weakens the objection that the network is
+        memorising the shape of the training curves: predicting zero everywhere
+        already gets it the identity.
+        """
+        original_length = x.shape[-1]
+        left, right = _padding_for(original_length)
+        if left or right:
+            x = F.pad(x, (left, right), mode="reflect")
+
+        identity = x
+
+        x = self.downsample(self.encoder_1(x))
+        x = self.downsample(self.encoder_2(x))
+        x = self.downsample(self.encoder_3(x))
+
+        x = self.decoder_1(self.upsample(x))
+        x = self.decoder_2(self.upsample(x))
+        x = self.decoder_3(self.upsample(x))
+
+        x = identity + self.output(x)
+        return x[..., left : left + original_length]
+
+    def parameter_count(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
 class NeuralDenoiser(Denoiser):
     """Wraps a trained ConvDenoiser in the benchmark's filter interface."""
 
     def __init__(self, network: ConvDenoiser, label: str = "ConvDenoiser") -> None:
+        super().__init__(zero_phase=False)
         self.network = network.eval()
         self.label = label
 
     @property
     def name(self) -> str:
         return self.label
+
+    @property
+    def phase(self) -> str:
+        """Non-causal by construction; the base class's forward-backward pass
+        is meaningless here and is never used."""
+        return "non-causal"
 
     @classmethod
     def load(cls, path: Path, label: str = "ConvDenoiser") -> "NeuralDenoiser":
@@ -133,8 +157,10 @@ class NeuralDenoiser(Denoiser):
         network.load_state_dict(checkpoint["state_dict"])
         return cls(network, label)
 
-    def apply(self, signal: np.ndarray) -> np.ndarray:
-        signal = self._validate(signal)
+    def _filter(self, signal: np.ndarray) -> np.ndarray:
         with torch.no_grad():
             tensor = torch.from_numpy(signal / SIGNAL_SCALE).float()[None, None, :]
-            return self.network(tensor).squeeze().numpy() * SIGNAL_SCALE
+            output = self.network(tensor)
+        # Explicit indexing rather than .squeeze(), which would silently drop
+        # any other length-1 axis.
+        return output[0, 0].numpy().astype(np.float64) * SIGNAL_SCALE

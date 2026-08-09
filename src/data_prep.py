@@ -1,20 +1,49 @@
 """
 Data preparation for the gyroscope denoising benchmark.
 
-There is no ground truth for this recording: nobody measured the true tilt at
-each sample. A reference curve is therefore constructed with a Savitzky-Golay
-filter, following the reference-curve method used in Krijestorac (2025),
-INFOTEH-JAHORINA. Whatever remains after subtracting that curve is treated as
-the noise component.
+Two things happen here, and both have consequences that are stated rather than
+hidden.
 
-The reference curve is an approximation of the truth, not the truth itself.
-A smoother always absorbs some noise into the fit and leaves some signal in
-the residual, so every result in this repository inherits that limitation.
+1. A reference curve
+--------------------
+There is no ground truth for this recording: nobody measured the true tilt at
+each sample. A reference curve is constructed with a Savitzky-Golay filter,
+following the reference-curve method used in Krijestorac (2025),
+INFOTEH-JAHORINA. Whatever remains after subtracting it is treated as noise.
+
+    This makes the real-recording benchmark partly circular, and the effect is
+    large. The target was built by a smoother, so smoothers reproduce it by
+    construction: a zero-phase Butterworth lands within 0.021 RMSE of the
+    Savitzky-Golay curve, against 0.166 for the unfiltered recording. Roughly
+    87 percent of the distance is closed by a method that knows nothing about
+    the signal. The real-recording result is therefore reported as a sanity
+    check, not as the headline. The headline is the synthetic benchmark, where
+    the clean curve is genuinely known.
+
+2. A fit / test split
+---------------------
+The first FIT_FRACTION of the recording is used to estimate the three noise
+parameters. The rest is never touched here and is the only part any method is
+scored on in evaluate.py. Without this split the noise parameters come from the
+same samples used for scoring.
+
+Units
+-----
+The recording is an integrated tilt ANGLE in degrees, not an angular rate. The
+legacy column header says `gyro_x_dps`, which is wrong: the values run 0 to
+8.75 over five seconds in a single rise and fall, which is an angle. Both
+header names are accepted so the data file does not have to be rewritten, but
+everything downstream treats and labels the series as degrees.
+
+This also qualifies a physics claim below: MEMS scale-factor error is
+proportional to angular rate, not to accumulated angle, so the envelope fitted
+against angle is a description that fits this recording rather than a statement
+about the sensor.
 
 Outputs
 -------
 data/processed/reference_and_residual.csv : the three aligned series
-data/processed/noise_stats.json           : statistics used by noise.py
+data/processed/noise_stats.json           : parameters used by noise.py
 results/tables/sg_window_sweep.csv        : evidence for the window choice
 results/figures/01_reference_and_residual.png
 """
@@ -39,14 +68,22 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 FIGURES_DIR = PROJECT_ROOT / "results" / "figures"
 TABLES_DIR = PROJECT_ROOT / "results" / "tables"
 
-SIGNAL_COLUMN = "gyro_x_dps"
+# `angle_deg` is the correct name; `gyro_x_dps` is the legacy header and is
+# accepted so the raw file does not have to be rewritten. See the Units note.
+SIGNAL_COLUMNS = ("angle_deg", "gyro_x_dps")
 
 SG_WINDOW = 25
 SG_POLYORDER = 3
-CANDIDATE_WINDOWS = (9, 15, 21, 31, 41, 51, 71, 101)
+# The chosen window must appear in the sweep, otherwise the table that exists
+# to justify the choice does not contain the choice.
+CANDIDATE_WINDOWS = (9, 15, 21, 25, 31, 41, 51, 71, 101)
 
 # Window used to measure how the noise level varies along the recording.
 ENVELOPE_WINDOW = 41
+
+# Fraction of the recording used to estimate noise parameters. The remainder is
+# held out and is the only part evaluate.py scores on.
+FIT_FRACTION = 0.5
 
 
 def load_recording(path: Path = RAW_CSV) -> np.ndarray:
@@ -54,11 +91,14 @@ def load_recording(path: Path = RAW_CSV) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"Recording not found at {path}.")
     frame = pd.read_csv(path)
-    if SIGNAL_COLUMN not in frame.columns:
+    for column in SIGNAL_COLUMNS:
+        if column in frame.columns:
+            signal = frame[column].to_numpy(dtype=np.float64)
+            break
+    else:
         raise KeyError(
-            f"Expected column '{SIGNAL_COLUMN}', got {list(frame.columns)}."
+            f"Expected one of {SIGNAL_COLUMNS}, got {list(frame.columns)}."
         )
-    signal = frame[SIGNAL_COLUMN].to_numpy(dtype=np.float64)
     if np.isnan(signal).any():
         raise ValueError("Recording contains missing values.")
     return signal
@@ -67,7 +107,7 @@ def load_recording(path: Path = RAW_CSV) -> np.ndarray:
 def fit_reference_curve(
     signal: np.ndarray, window: int = SG_WINDOW, polyorder: int = SG_POLYORDER
 ) -> np.ndarray:
-    """Fit the smooth reference curve used as the ground truth."""
+    """Fit the smooth reference curve used in place of a ground truth."""
     if window % 2 == 0:
         raise ValueError("Savitzky-Golay window length must be odd.")
     if window <= polyorder:
@@ -82,6 +122,13 @@ def sweep_window_lengths(signal: np.ndarray) -> pd.DataFrame:
     Too long and it flattens real movement, so genuine signal leaks into the
     residual. The usable window is where the residual standard deviation stops
     changing quickly.
+
+    Read the lag-1 column honestly. It runs from about -0.10 at window 9 to
+    about +0.63 at window 101. Residual autocorrelation is therefore mostly a
+    property of THIS CHOICE, not of the sensor: a longer window leaves more real
+    signal in the residual, and real signal is autocorrelated. The value at the
+    chosen window is what noise.py reproduces, and it should be described that
+    way rather than as a measured sensor property.
     """
     rows = []
     for window in CANDIDATE_WINDOWS:
@@ -93,6 +140,7 @@ def sweep_window_lengths(signal: np.ndarray) -> pd.DataFrame:
                 "residual_lag1_autocorr": np.corrcoef(
                     residual[:-1], residual[1:]
                 )[0, 1],
+                "chosen": window == SG_WINDOW,
             }
         )
     return pd.DataFrame(rows)
@@ -101,41 +149,55 @@ def sweep_window_lengths(signal: np.ndarray) -> pd.DataFrame:
 def fit_noise_envelope(
     reference: np.ndarray, residual: np.ndarray, window: int = ENVELOPE_WINDOW
 ) -> dict[str, float]:
-    """Fit how the noise level varies with the signal level.
+    """Fit how the local noise level varies along the recording.
 
-    MEMS gyroscope error is conventionally split into a constant floor plus a
-    component proportional to the measurement. Measuring the local noise
-    standard deviation in sliding windows and regressing it on the reference
-    level recovers exactly that: the intercept is the floor, the slope is the
-    proportional term.
+    Regressing the local residual standard deviation on the reference level
+    gives a floor (intercept) and a growth term (slope).
 
-    Without this, synthetic noise would be flat across the recording while the
-    real noise is several times larger at full tilt than at rest.
+    The confound, measured rather than assumed
+    ------------------------------------------
+    This recording is a single rise and fall, so signal level is not obviously
+    separable from signal speed, and a Savitzky-Golay fit's own error grows with
+    speed and curvature. A good fit against level therefore does not by itself
+    prove the noise scales with angle; it may be tracking fit error. The same
+    regression is run against |d(reference)/dt| and both R-squared values are
+    reported, so the reader can see how much the level story is worth.
     """
     half = window // 2
     centres = np.arange(half, residual.size - half)
     local_std = np.array(
         [residual[i - half : i + half + 1].std(ddof=1) for i in centres]
     )
-    local_level = reference[centres]
+    local_level = np.abs(reference[centres])
+    local_speed = np.abs(np.gradient(reference))[centres]
 
-    slope, intercept = np.polyfit(local_level, local_std, 1)
-    predicted = slope * local_level + intercept
-    r_squared = 1.0 - np.var(local_std - predicted) / np.var(local_std)
+    def linear_fit(predictor: np.ndarray) -> tuple[float, float, float]:
+        slope, intercept = np.polyfit(predictor, local_std, 1)
+        predicted = slope * predictor + intercept
+        r_squared = 1.0 - np.var(local_std - predicted) / np.var(local_std)
+        return float(slope), float(intercept), float(r_squared)
+
+    slope, intercept, r_squared = linear_fit(local_level)
+    _, _, speed_r_squared = linear_fit(local_speed)
 
     return {
-        "envelope_slope": float(slope),
-        "envelope_intercept": float(intercept),
-        "envelope_r_squared": float(r_squared),
+        "envelope_slope": slope,
+        "envelope_intercept": intercept,
+        "envelope_r_squared": r_squared,
+        "envelope_r_squared_vs_speed": speed_r_squared,
+        "level_speed_correlation": float(
+            np.corrcoef(local_level, local_speed)[0, 1]
+        ),
     }
 
 
 def characterise_noise(residual: np.ndarray) -> dict[str, float]:
-    """Describe the noise well enough to reproduce it.
+    """Describe the residual well enough to reproduce it, and to say what the
+    generator will miss.
 
-    Two properties rule out white Gaussian noise as a training signal:
-    consecutive samples are correlated, and the distribution is skewed with
-    heavy tails. noise.py uses a method that preserves both.
+    noise.py reproduces the standard deviation and the lag-1 autocorrelation.
+    It does not reproduce the skewness or the excess kurtosis, both reported
+    here so the omission is on the record.
     """
     return {
         "residual_std": float(residual.std(ddof=1)),
@@ -153,6 +215,7 @@ def plot_overview(
     signal: np.ndarray,
     reference: np.ndarray,
     residual: np.ndarray,
+    fit_end: int,
     path: Path,
     window: int,
     polyorder: int,
@@ -162,27 +225,39 @@ def plot_overview(
         2, 1, figsize=(10, 6), sharex=True, height_ratios=[2, 1]
     )
 
-    axes[0].plot(signal, lw=0.8, color="#888780", label="raw measurement")
+    axes[0].plot(signal, lw=0.8, color="#888780", label="recording")
     axes[0].plot(
         reference,
         lw=1.8,
         color="#185FA5",
         label=f"Savitzky-Golay reference ({window}, {polyorder})",
     )
-    axes[0].set_ylabel("gyro x")
-    axes[0].legend(frameon=False)
+    axes[0].set_ylabel("tilt angle (degrees)")
+    axes[0].legend(frameon=False, loc="lower center")
     axes[0].set_title("Recording and constructed reference curve")
 
     axes[1].plot(residual, lw=0.7, color="#D85A30")
     axes[1].axhline(0.0, color="#444441", lw=0.6)
-    axes[1].set_ylabel("residual")
+    axes[1].set_ylabel("residual (deg)")
     axes[1].set_xlabel("sample index")
     axes[1].set_title(
-        f"Noise component, std = {residual.std(ddof=1):.3f}", fontsize=10
+        f"Residual, std = {residual.std(ddof=1):.3f} deg", fontsize=10
     )
 
     for axis in axes:
+        axis.axvspan(0, fit_end, color="#185FA5", alpha=0.06)
+        axis.axvline(fit_end, color="#185FA5", lw=1.0, ls="--")
         axis.spines[["top", "right"]].set_visible(False)
+
+    top = axes[0].get_ylim()[1]
+    axes[0].text(
+        fit_end * 0.5, top * 0.97, "noise parameters fitted here",
+        ha="center", va="top", fontsize=8, color="#185FA5",
+    )
+    axes[0].text(
+        fit_end + (signal.size - fit_end) * 0.5, top * 0.97, "held out for scoring",
+        ha="center", va="top", fontsize=8, color="#444441",
+    )
 
     fig.tight_layout()
     fig.savefig(path, dpi=130)
@@ -194,11 +269,14 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     signal = load_recording()
-    print(f"Loaded {signal.size} samples")
+    fit_end = int(signal.size * FIT_FRACTION)
+    print(f"Loaded {signal.size} samples from {RAW_CSV.name}")
     print(
-        f"  range {signal.min():.2f} to {signal.max():.2f}, "
+        f"  range {signal.min():.2f} to {signal.max():.2f} deg, "
         f"std {signal.std(ddof=1):.3f}"
     )
+    print(f"  samples 0..{fit_end - 1} used for fitting")
+    print(f"  samples {fit_end}..{signal.size - 1} held out for scoring")
 
     sweep = sweep_window_lengths(signal)
     print("\nWindow length sweep:")
@@ -208,27 +286,51 @@ def main() -> None:
     reference = fit_reference_curve(signal)
     residual = signal - reference
 
-    noise_stats = characterise_noise(residual)
-    noise_stats.update(fit_noise_envelope(reference, residual))
+    # Everything below is estimated on the fit half only.
+    noise_stats = characterise_noise(residual[:fit_end])
+    noise_stats.update(fit_noise_envelope(reference[:fit_end], residual[:fit_end]))
     noise_stats["sg_window"] = SG_WINDOW
     noise_stats["sg_polyorder"] = SG_POLYORDER
+    noise_stats["fit_end"] = fit_end
+    noise_stats["n_total_samples"] = int(signal.size)
 
     print(f"\nChosen window {SG_WINDOW}, polynomial order {SG_POLYORDER}")
-    print("Noise statistics:")
+    print("Noise parameters (fit half only):")
     for key, value in noise_stats.items():
         formatted = f"{value:.4f}" if isinstance(value, float) else str(value)
-        print(f"  {key:22s} {formatted}")
+        print(f"  {key:28s} {formatted}")
 
+    print("\nWhat noise.py will and will not reproduce:")
     print(
-        f"\n  Correlated (lag-1 {noise_stats['lag1_autocorrelation']:.2f}) and "
-        f"skewed ({noise_stats['skewness']:+.2f}): white Gaussian noise would"
+        f"  reproduced      std {noise_stats['residual_std']:.4f}, "
+        f"lag-1 {noise_stats['lag1_autocorrelation']:+.3f}"
     )
-    print("  not be a fair training signal. It also grows with the measurement:")
     print(
-        f"  std = {noise_stats['envelope_slope']:.4f} * level + "
-        f"{noise_stats['envelope_intercept']:.4f}  "
-        f"(R^2 = {noise_stats['envelope_r_squared']:.3f})"
+        f"  NOT reproduced  skewness {noise_stats['skewness']:+.3f}, "
+        f"excess kurtosis {noise_stats['excess_kurtosis']:+.3f} "
+        "(the generator is Gaussian)"
     )
+    print(
+        "\n  Read the lag-1 value as a property of the chosen smoothing window,"
+        "\n  not of the sensor: see the sweep table above."
+    )
+    print(
+        f"\n  Envelope: std = {noise_stats['envelope_slope']:.4f} * |angle| + "
+        f"{noise_stats['envelope_intercept']:.4f}"
+    )
+    print(
+        f"    R^2 against level {noise_stats['envelope_r_squared']:.3f}, "
+        f"against speed {noise_stats['envelope_r_squared_vs_speed']:.3f}, "
+        f"level/speed correlation {noise_stats['level_speed_correlation']:+.3f}"
+    )
+    if (
+        noise_stats["envelope_r_squared_vs_speed"]
+        >= noise_stats["envelope_r_squared"]
+    ):
+        print(
+            "    Speed explains the noise level at least as well as angle does."
+            "\n    Treat the envelope as a description, not a physical claim."
+        )
 
     pd.DataFrame(
         {"raw": signal, "reference": reference, "residual": residual}
@@ -241,6 +343,7 @@ def main() -> None:
         signal,
         reference,
         residual,
+        fit_end,
         FIGURES_DIR / "01_reference_and_residual.png",
         SG_WINDOW,
         SG_POLYORDER,

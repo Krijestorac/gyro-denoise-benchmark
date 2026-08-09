@@ -1,104 +1,105 @@
 """
 Training noise generation.
 
-Only one recording exists, so training noise has to be manufactured. Two
-measured properties rule out the obvious choice of white Gaussian noise:
-consecutive samples are correlated (lag-1 autocorrelation about 0.51), and the
-distribution is skewed with heavy tails. Training on noise that is easier than
-the real thing would make every benchmark number optimistic.
+Only one recording exists, so training noise has to be manufactured. The
+generator has one hard constraint: it must not reuse any value from the part of
+the recording the methods are scored on. Otherwise the network is trained on
+the exact noise it will be tested against, and every number that follows is
+optimistic.
 
-The method used is the iterative amplitude-adjusted Fourier transform
-(Schreiber & Schmitz, 1996), a surrogate data method. It alternates between
-imposing the measured power spectrum and imposing the measured amplitude
-distribution until both hold. The output is a reordering of the measured
-values with a different, statistically equivalent time structure.
+The model is deliberately simple: a first-order autoregressive process scaled
+by a signal-dependent envelope.
 
-The generated noise is then scaled by the envelope fitted in data_prep.py, so
-that it grows with the signal level the way the real sensor noise does.
+    e[k]     = phi * e[k-1] + w[k],   w ~ N(0, 1)
+    noise[k] = e[k] * (slope * |reference[k]| + intercept)
 
-Known limitation: because the output is a reordering of the 500 measured
-values, no amplitude outside the observed range can ever appear.
+Three parameters, all estimated from the FIT HALF of the recording only (see
+data_prep.py):
+
+    phi        lag-1 autocorrelation of the residual
+    slope      how fast the noise level grows with the signal level
+    intercept  the noise floor at rest
+
+Nothing else crosses from the recording into the generator. No measured value
+is reused, only three numbers, and those three come from samples nothing is
+scored on.
+
+Why this replaced the previous method
+-------------------------------------
+The previous version used the iterative amplitude-adjusted Fourier transform
+(Schreiber & Schmitz, 1996). IAAFT reproduces a target's power spectrum and
+amplitude distribution exactly, and it does so by reordering the target's own
+values. The target was the residual of the recording the model was scored
+against, so every training example carried the exact amplitude distribution and
+power spectrum of the test noise. Checked directly, the surrogate was a
+permutation of the test residual (identical sorted arrays) with a power-spectrum
+correlation of 0.9999.
+
+Known limitation, stated plainly
+--------------------------------
+The innovations are Gaussian. The measured residual is mildly right-skewed
+(about +0.4) and heavy-tailed (excess kurtosis about +0.7), and this generator
+reproduces neither. Synthetic noise is therefore slightly easier than the real
+thing. That penalty applies equally to every method in the benchmark, so it
+does not favour one over another, but absolute error figures on synthetic data
+should be read as a lower bound.
+
+Distributional realism was traded for a clean train/test boundary. That is the
+right trade when the alternative is a benchmark nobody can believe.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy.signal import lfilter
 
-DEFAULT_ITERATIONS = 200
 
+def ar1_series(length: int, phi: float, rng: np.random.Generator) -> np.ndarray:
+    """One realisation of a unit-variance AR(1) process.
 
-def iaaft_surrogate(
-    residual: np.ndarray,
-    rng: np.random.Generator,
-    n_iterations: int = DEFAULT_ITERATIONS,
-) -> np.ndarray:
-    """Return one independent noise realisation matching the residual.
-
-    Starts from a random shuffle, then repeatedly imposes the target spectrum
-    (which distorts the distribution) and rank-orders back onto the target
-    values (which restores it). Stops early once the ordering settles.
+    `lfilter([1], [1, -phi], w)` is the recursion e[k] = phi*e[k-1] + w[k].
+    Dividing by the theoretical standard deviation sqrt(1/(1 - phi^2)) rather
+    than the realised one leaves the natural variation between realisations
+    intact; normalising by the realised value would force every draw to unit
+    variance and quietly understate the spread in the benchmark's error bars.
     """
-    residual = np.asarray(residual, dtype=np.float64)
-    if residual.ndim != 1:
-        raise ValueError("Residual must be one-dimensional.")
+    if not -1.0 < phi < 1.0:
+        raise ValueError(f"AR(1) coefficient must lie in (-1, 1), got {phi}.")
+    if length < 1:
+        raise ValueError("Length must be positive.")
 
-    target_magnitudes = np.abs(np.fft.rfft(residual))
-    sorted_values = np.sort(residual)
-
-    candidate = rng.permutation(residual)
-    previous_ranks: np.ndarray | None = None
-
-    for _ in range(n_iterations):
-        spectrum = np.fft.rfft(candidate)
-        candidate = np.fft.irfft(
-            target_magnitudes * np.exp(1j * np.angle(spectrum)), n=residual.size
-        )
-        ranks = np.argsort(np.argsort(candidate))
-        candidate = sorted_values[ranks]
-
-        if previous_ranks is not None and np.array_equal(ranks, previous_ranks):
-            break
-        previous_ranks = ranks
-
-    return candidate
+    innovations = rng.standard_normal(length)
+    series = lfilter([1.0], [1.0, -phi], innovations)
+    return series / np.sqrt(1.0 / (1.0 - phi * phi))
 
 
-def scale_to_envelope(
-    noise: np.ndarray,
-    reference: np.ndarray,
-    slope: float,
-    intercept: float,
+def envelope_for(
+    reference: np.ndarray, slope: float, intercept: float
 ) -> np.ndarray:
-    """Scale noise so its local amplitude follows the signal level.
+    """Target noise standard deviation at each sample.
 
-    The surrogate has a single standard deviation across its whole length. The
-    real noise does not: it is roughly `slope * level + intercept`. Dividing by
-    the surrogate's own standard deviation and multiplying by the target
-    envelope imposes that relationship.
+    MEMS error is conventionally split into a constant floor plus a term that
+    grows with the measurement. The intercept is the floor, the slope is the
+    growth. See data_prep.fit_noise_envelope for how well that holds on this
+    recording and for the confound it cannot fully resolve.
     """
-    if noise.shape != reference.shape:
-        raise ValueError(
-            f"Noise shape {noise.shape} does not match reference {reference.shape}."
-        )
     envelope = slope * np.abs(reference) + intercept
     if np.any(envelope <= 0):
         raise ValueError("Fitted envelope is non-positive; check the fit.")
-    return noise / noise.std(ddof=1) * envelope
+    return envelope
 
 
 def make_noise(
-    residual: np.ndarray,
     reference: np.ndarray,
+    phi: float,
     slope: float,
     intercept: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
     """Generate one noise realisation shaped to the given reference curve."""
-    surrogate = iaaft_surrogate(residual, rng)
-    if reference.size != surrogate.size:
-        surrogate = np.interp(
-            np.linspace(0.0, 1.0, reference.size),
-            np.linspace(0.0, 1.0, surrogate.size),
-            surrogate,
-        )
-    return scale_to_envelope(surrogate, reference, slope, intercept)
+    reference = np.asarray(reference, dtype=np.float64)
+    if reference.ndim != 1:
+        raise ValueError("Reference must be one-dimensional.")
+    return ar1_series(reference.size, phi, rng) * envelope_for(
+        reference, slope, intercept
+    )
