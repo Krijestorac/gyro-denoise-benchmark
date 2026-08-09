@@ -9,69 +9,64 @@ Real recording: samples 250-499 (250 of 500); the first 250 were used to fit the
 
 Every classical filter runs forwards and backwards and is tuned in that mode. The network runs as trained.
 
-```
-                    method      phase  mean_rmse   ci_low  ci_high  std_rmse
-       MovingAverage(w=21) zero-phase   0.064386 0.060571 0.068664  0.020736
-     Bessel(o=4, fc=4.0Hz) zero-phase   0.066579 0.062655 0.070498  0.019541
-Butterworth(o=4, fc=2.0Hz) zero-phase   0.067093 0.063267 0.071108  0.020832
-                EMA(a=0.2) zero-phase   0.075928 0.071820 0.080092  0.020943
-   Kalman(Q=0.001, R=0.01) zero-phase   0.087339 0.082776 0.091569  0.023011
-              ConvDenoiser non-causal   0.110090 0.105205 0.115100  0.026296
-```
+| method                     | phase      |   mean_rmse |   ci_low |   ci_high |   std_rmse |
+|:---------------------------|:-----------|------------:|---------:|----------:|-----------:|
+| MovingAverage(w=21)        | zero-phase |      0.0644 |   0.0606 |    0.0687 |     0.0207 |
+| Bessel(o=4, fc=4.0Hz)      | zero-phase |      0.0666 |   0.0627 |    0.0705 |     0.0195 |
+| Butterworth(o=4, fc=2.0Hz) | zero-phase |      0.0671 |   0.0633 |    0.0711 |     0.0208 |
+| EMA(a=0.2)                 | zero-phase |      0.0759 |   0.0718 |    0.0801 |     0.0209 |
+| Kalman(Q=0.001, R=0.01)    | zero-phase |      0.0873 |   0.0828 |    0.0916 |     0.0230 |
+| ConvDenoiser               | non-causal |      0.1101 |   0.1052 |    0.1151 |     0.0263 |
 
 ## B. Causal comparison (real-time)
 
 Forward pass only, re-tuned. The network is absent: it is non-causal by construction and cannot compete here without being redesigned.
 
-```
-                     method  phase  mean_rmse   ci_low  ci_high
-                EMA(a=0.35) causal   0.143946 0.136342 0.152082
-         MovingAverage(w=5) causal   0.150409 0.142348 0.159030
-     Kalman(Q=0.01, R=0.01) causal   0.157139 0.149639 0.164798
-     Bessel(o=4, fc=30.0Hz) causal   0.170632 0.162179 0.179299
-Butterworth(o=4, fc=20.0Hz) causal   0.178696 0.169490 0.187947
-```
+| method                      | phase   |   mean_rmse |   ci_low |   ci_high |
+|:----------------------------|:--------|------------:|---------:|----------:|
+| EMA(a=0.35)                 | causal  |      0.1439 |   0.1363 |    0.1521 |
+| MovingAverage(w=5)          | causal  |      0.1504 |   0.1423 |    0.1590 |
+| Kalman(Q=0.01, R=0.01)      | causal  |      0.1571 |   0.1496 |    0.1648 |
+| Bessel(o=4, fc=30.0Hz)      | causal  |      0.1706 |   0.1622 |    0.1793 |
+| Butterworth(o=4, fc=20.0Hz) | causal  |      0.1787 |   0.1695 |    0.1879 |
 
 ## C. Significance, pre-specified family
 
 ConvDenoiser against each zero-phase baseline, paired Wilcoxon signed-rank, Holm-Bonferroni corrected across the five tests.
 
-```
-                                comparison  median_rmse_difference  network_better_on  of_signals  wilcoxon_statistic        p_raw       p_holm       verdict
-     ConvDenoiser vs Bessel(o=4, fc=4.0Hz)               -0.043032                  0         100                 0.0 3.896560e-18 1.948280e-17 network worse
-ConvDenoiser vs Butterworth(o=4, fc=2.0Hz)               -0.041579                  0         100                 0.0 3.896560e-18 1.948280e-17 network worse
-       ConvDenoiser vs MovingAverage(w=21)               -0.045219                  0         100                 0.0 3.896560e-18 1.948280e-17 network worse
-                ConvDenoiser vs EMA(a=0.2)               -0.034021                  0         100                 0.0 3.896560e-18 1.948280e-17 network worse
-   ConvDenoiser vs Kalman(Q=0.001, R=0.01)               -0.022655                  0         100                 0.0 3.896560e-18 1.948280e-17 network worse
-```
+| comparison                                 |   median_rmse_difference |   network_better_on |   of_signals |   wilcoxon_statistic |   p_raw |   p_holm | verdict       |
+|:-------------------------------------------|-------------------------:|--------------------:|-------------:|---------------------:|--------:|---------:|:--------------|
+| ConvDenoiser vs Bessel(o=4, fc=4.0Hz)      |                  -0.0430 |                   0 |          100 |               0.0000 |  0.0000 |   0.0000 | network worse |
+| ConvDenoiser vs Butterworth(o=4, fc=2.0Hz) |                  -0.0416 |                   0 |          100 |               0.0000 |  0.0000 |   0.0000 | network worse |
+| ConvDenoiser vs MovingAverage(w=21)        |                  -0.0452 |                   0 |          100 |               0.0000 |  0.0000 |   0.0000 | network worse |
+| ConvDenoiser vs EMA(a=0.2)                 |                  -0.0340 |                   0 |          100 |               0.0000 |  0.0000 |   0.0000 | network worse |
+| ConvDenoiser vs Kalman(Q=0.001, R=0.01)    |                  -0.0227 |                   0 |          100 |               0.0000 |  0.0000 |   0.0000 | network worse |
 
 ## D. Real recording, held-out half
 
 A sanity check, not evidence. The target is a Savitzky-Golay curve, so low-pass filters reproduce it by construction. n = 1, so there is no interval to report.
 
-```
-                    method      phase     rmse
-   Kalman(Q=0.001, R=0.01) zero-phase 0.035821
-                EMA(a=0.2) zero-phase 0.037992
-     Bessel(o=4, fc=4.0Hz) zero-phase 0.053415
-       MovingAverage(w=21) zero-phase 0.067609
-Butterworth(o=4, fc=2.0Hz) zero-phase 0.073940
-              ConvDenoiser non-causal 0.122610
-         (raw, unfiltered)          - 0.133197
-```
+| method                     | phase      |   rmse |
+|:---------------------------|:-----------|-------:|
+| Kalman(Q=0.001, R=0.01)    | zero-phase | 0.0358 |
+| EMA(a=0.2)                 | zero-phase | 0.0380 |
+| Bessel(o=4, fc=4.0Hz)      | zero-phase | 0.0534 |
+| MovingAverage(w=21)        | zero-phase | 0.0676 |
+| Butterworth(o=4, fc=2.0Hz) | zero-phase | 0.0739 |
+| ConvDenoiser               | non-causal | 0.1226 |
+| (raw, unfiltered)          | -          | 0.1332 |
 
 ## E. Tuned parameters
 
-```
-       filter      phase  chosen_parameter  tuning_rmse  grid_min  grid_max  at_grid_edge
-       Bessel     causal            30.000     0.174029  1.000000      40.0         False
-  Butterworth     causal            20.000     0.182832  1.000000      40.0         False
-MovingAverage     causal             5.000     0.154834  3.000000      51.0         False
-          EMA     causal             0.350     0.148191  0.020000       1.0         False
-       Kalman     causal             0.010     0.159965  0.000001       7.0         False
-       Bessel zero-phase             4.000     0.067955  1.000000      40.0         False
-  Butterworth zero-phase             2.000     0.068340  1.000000      40.0         False
-MovingAverage zero-phase            21.000     0.065385  3.000000      51.0         False
-          EMA zero-phase             0.200     0.077256  0.020000       1.0         False
-       Kalman zero-phase             0.001     0.088731  0.000001       7.0         False
-```
+| filter        | phase      |   chosen_parameter |   tuning_rmse |   grid_min |   grid_max | at_grid_edge   |
+|:--------------|:-----------|-------------------:|--------------:|-----------:|-----------:|:---------------|
+| Bessel        | causal     |            30.0000 |        0.1740 |     1.0000 |    40.0000 | False          |
+| Butterworth   | causal     |            20.0000 |        0.1828 |     1.0000 |    40.0000 | False          |
+| MovingAverage | causal     |             5.0000 |        0.1548 |     3.0000 |    51.0000 | False          |
+| EMA           | causal     |             0.3500 |        0.1482 |     0.0200 |     1.0000 | False          |
+| Kalman        | causal     |             0.0100 |        0.1600 |     0.0000 |     7.0000 | False          |
+| Bessel        | zero-phase |             4.0000 |        0.0680 |     1.0000 |    40.0000 | False          |
+| Butterworth   | zero-phase |             2.0000 |        0.0683 |     1.0000 |    40.0000 | False          |
+| MovingAverage | zero-phase |            21.0000 |        0.0654 |     3.0000 |    51.0000 | False          |
+| EMA           | zero-phase |             0.2000 |        0.0773 |     0.0200 |     1.0000 | False          |
+| Kalman        | zero-phase |             0.0010 |        0.0887 |     0.0000 |     7.0000 | False          |

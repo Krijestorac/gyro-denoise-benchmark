@@ -1,4 +1,4 @@
-﻿# gyro-denoise-benchmark
+# gyro-denoise-benchmark
 
 Does a small 1D convolutional denoiser beat classical filters on MEMS gyroscope
 tilt data, once the comparison is actually fair?
@@ -139,18 +139,38 @@ both R² values so the confound is visible instead of assumed.
 
 ## Results
 
-<!--
-  AFTER RUNNING THE PIPELINE, replace this comment with two or three sentences
-  copied from results/tables/summary.md, in this shape:
+## Results
 
-  "Under matched non-causal conditions, <winner> gives the lowest error
-  (<mean> RMSE, 95% CI <low>-<high>). ConvDenoiser places <n>th at <mean>;
-  Holm-corrected paired tests put it <significantly behind / level with>
-  <methods>. In the causal setting the network cannot compete at all, because
-  it is not a causal filter."
+Under matched non-causal conditions a tuned 21-tap zero-phase moving average
+gives the lowest error (**0.0644** RMSE, 95% CI 0.0606–0.0687), ahead of Bessel
+at 4 Hz (0.0666) and Butterworth at 2 Hz (0.0671). The convolutional denoiser
+places **last at 0.1101** (CI 0.1052–0.1151) — 71% worse than the moving
+average, and worse on **all 100** test signals against every baseline
+(Holm-corrected p ≈ 2e-17).
 
-  Do not write this paragraph from expectation.
--->
+The network converged: training stopped after 381 epochs with validation loss
+flat since roughly epoch 284, 67% below the do-nothing baseline. This is not an
+undertrained model, and two things explain the gap. A symmetric 21-tap average
+is representable by the network's first convolution layer, so capacity is not
+the constraint — the network fails to find a solution it can already express.
+And with Gaussian noise and a smooth bandlimited signal, the minimum-MSE
+estimator is close to linear, so a ReLU network spends capacity approximating a
+linear operator and gains nothing in return.
+
+Training destabilised briefly around epoch 335 and recovered; the retained
+checkpoint is from epoch 331, before the spike, where validation loss had been
+flat for about fifty epochs.
+
+In the causal setting the network cannot compete at all — it is non-causal by
+construction. The comparison relevant to the embedded deployment in the
+published work is Table B, where it does not appear and a causal EMA (α = 0.35,
+0.1439) leads.
+
+One result shows why the real recording is not the headline. The zero-phase
+Kalman filter is **last** among classical filters on synthetic data (0.0873)
+and **first** on the real recording (0.0358). The ranking inverts because the
+real target is a Savitzky-Golay curve, and matching a smoother is not the same
+as removing noise.
 
 ![benchmark](results/figures/03_benchmark.png)
 
