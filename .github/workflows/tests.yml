@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The suite covers filters.py, noise.py and signals.py, none of which
+      # import torch. Installing only what the tests need keeps CI at ~20s
+      # and enforces the README's claim that the tests run without PyTorch.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=1.26" "scipy>=1.11" "pytest>=8.0"
+
+      - name: Fail if the tests import torch
+        run: |
+          ! grep -rn "import torch" tests/
+
+      - name: Run tests
+        run: pytest -q
