@@ -39,7 +39,9 @@ Both exist because this project has been burned by each failure once.
                       that by a clear margin it has not learned to denoise, and
                       any benchmark built on it measures nothing. This is the
                       check that catches a model which trained to the identity
-                      -- silently, with a flat loss curve and no error.
+                      -- silently, with a flat loss curve and no error. It is a
+                      gate: a run that fails it exits non-zero and writes no
+                      checkpoint, so the failure cannot reach evaluate.py.
 
 Run:  python src/train.py     (after data_prep.py)
 """
@@ -96,7 +98,8 @@ PATIENCE = 50
 MIN_EPOCHS = 30
 
 # A trained network must beat the do-nothing baseline by at least this fraction
-# of the baseline loss, or the run is reported as failed rather than benchmarked.
+# of the baseline loss, or the run aborts without writing a checkpoint, so
+# evaluate.py has nothing to benchmark.
 MIN_IMPROVEMENT_OVER_IDENTITY = 0.10
 
 BASE_CHANNELS = 16
@@ -288,15 +291,15 @@ def main() -> None:
         f"  that is {100.0 * improvement:.1f}% below the do-nothing baseline "
         f"({baseline:.6f})"
     )
-    if improvement < MIN_IMPROVEMENT_OVER_IDENTITY:
+    learned_nothing = improvement < MIN_IMPROVEMENT_OVER_IDENTITY
+    if learned_nothing:
         print(
             "\n  ERROR: the network did not beat returning its input by a "
             "meaningful margin."
             "\n  It has not learned to denoise. Benchmarking it would measure "
             "nothing."
             "\n  Check the initialisation, the learning rate, and whether early"
-            "\n  stopping fired during a warm-up plateau. Do NOT report the"
-            "\n  results of evaluate.py from this checkpoint."
+            "\n  stopping fired during a warm-up plateau."
         )
 
     # --- guard 2: the leak signature -----------------------------------------
@@ -312,6 +315,16 @@ def main() -> None:
             "\n  epoch. On this project that pattern was the signature of a"
             "\n  data leak. Check the split before trusting these results."
         )
+
+    # Guard 1 is a gate, not a note. Exiting here rather than at the check
+    # itself lets the leak detector above report as well, so a broken run
+    # surfaces both diagnostics before it stops.
+    if learned_nothing:
+        print(
+            "\n  Checkpoint NOT written, so evaluate.py cannot benchmark this"
+            "\n  run. Fix the training run and try again."
+        )
+        raise SystemExit(1)
 
     torch.save(
         {"state_dict": best_state, "base_channels": BASE_CHANNELS},

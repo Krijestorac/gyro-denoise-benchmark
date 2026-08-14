@@ -1,8 +1,6 @@
 """
 Data preparation for the gyroscope denoising benchmark.
 
-Two things happen here, and both have consequences that are stated rather than
-hidden.
 
 1. A reference curve
 --------------------
@@ -11,14 +9,6 @@ each sample. A reference curve is constructed with a Savitzky-Golay filter,
 following the reference-curve method used in Krijestorac (2025),
 INFOTEH-JAHORINA. Whatever remains after subtracting it is treated as noise.
 
-    This makes the real-recording benchmark partly circular, and the effect is
-    large. The target was built by a smoother, so smoothers reproduce it by
-    construction: a zero-phase Butterworth lands within 0.021 RMSE of the
-    Savitzky-Golay curve, against 0.166 for the unfiltered recording. Roughly
-    87 percent of the distance is closed by a method that knows nothing about
-    the signal. The real-recording result is therefore reported as a sanity
-    check, not as the headline. The headline is the synthetic benchmark, where
-    the clean curve is genuinely known.
 
 2. A fit / test split
 ---------------------
@@ -39,13 +29,6 @@ This also qualifies a physics claim below: MEMS scale-factor error is
 proportional to angular rate, not to accumulated angle, so the envelope fitted
 against angle is a description that fits this recording rather than a statement
 about the sensor.
-
-Outputs
--------
-data/processed/reference_and_residual.csv : the three aligned series
-data/processed/noise_stats.json           : parameters used by noise.py
-results/tables/sg_window_sweep.csv        : evidence for the window choice
-results/figures/01_reference_and_residual.png
 """
 
 from __future__ import annotations

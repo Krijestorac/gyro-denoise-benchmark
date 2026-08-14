@@ -94,7 +94,6 @@ class ConvDenoiser(nn.Module):
 
         self.output = nn.Conv1d(c1, 1, KERNEL_SIZE, padding=KERNEL_SIZE // 2)
 
-       
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map (batch, 1, length) noisy signals to denoised signals.
 

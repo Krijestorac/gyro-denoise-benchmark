@@ -33,7 +33,7 @@ Five paired Wilcoxon tests, Holm-Bonferroni corrected: the network is worse than
 
 It is not undertrained. Training ran 381 epochs, validation loss flat from ~284, ending 67% below the do-nothing baseline. Three reasons:
 
-- **Capacity is not the constraint.** A symmetric 21-tap average is representable by the first convolution layer. The network fails to find a solution it can already express.
+- **Capacity is not the constraint.** Run forwards and backwards, the winning moving average is a 41-tap symmetric triangular kernel — comfortably inside the network's receptive field, which reaches about 64 samples at the bottleneck. The network fails to find a solution it can already express.
 - **The optimal estimator here is nearly linear.** Gaussian noise plus a smooth bandlimited signal means a ReLU network spends capacity approximating a linear operator and gains nothing back.
 - **Deep learning needs a nonlinearity to exploit.** This problem does not have one.
 
@@ -83,7 +83,7 @@ Nobody measured the true tilt at each sample. Two consequences:
 
 **The target is a fitted curve.** A Savitzky-Golay filter (window 25, order 3) stands in for the clean signal — the same approach as the published paper. `results/tables/sg_window_sweep.csv` shows the nine candidate windows.
 
-> This makes the *real-recording* comparison partly circular, and the effect is large: a zero-phase Butterworth lands within 0.021 RMSE of the Savitzky-Golay curve, against 0.166 for the raw recording. About 87% of the distance is closed by a method that knows nothing about the signal. **The synthetic benchmark is the headline**, because there the clean curve is genuinely known.
+> This makes the *real-recording* comparison partly circular: on the held-out half, the tuned zero-phase Butterworth lands within 0.074 RMSE of the Savitzky-Golay curve, against 0.133 for the raw recording. About 44% of the distance is closed by a method that knows nothing about the signal. **The synthetic benchmark is the headline**, because there the clean curve is genuinely known.
 
 **Training targets are synthetic.** Training on the one real curve with different noise added would let the network memorise the shape. `src/signals.py` generates a family of manoeuvres instead — randomised onset, duration, peak — so the network learns the operation, not the answer.
 
@@ -106,7 +106,7 @@ Known limitation: the innovations are Gaussian, while the measured residual is m
 | ConvDenoiser | as trained | **absent** — it cannot run causally |
 | Answers | which method is most accurate | which could run on the microcontroller |
 
-Every filter is re-tuned by grid search *inside each mode*, on synthetic data only, because the optimum moves: causally the lag penalty pushes towards barely filtering, zero-phase it pushes towards heavy smoothing. The tuning table flags any parameter landing on a grid boundary. In Table B a causal EMA (α = 0.35, RMSE 0.1439) leads — that is the comparison relevant to the embedded deployment in the published work.
+Every filter is re-tuned by grid search *inside each mode*, because the optimum moves: causally the lag penalty pushes towards barely filtering, zero-phase it pushes towards heavy smoothing. Tuning runs on a **separate synthetic set** — 60 curves, seed 99 — disjoint from the 100 test curves at seed 123, so no filter is scored on the data that chose its parameters. The tuning table flags any parameter landing on a grid boundary. In Table B a causal EMA (α = 0.35, RMSE 0.1439) leads — that is the comparison relevant to the embedded deployment in the published work.
 
 ### Statistics
 
@@ -125,6 +125,7 @@ This qualifies one claim: MEMS scale-factor error scales with angular *rate*, no
 <details>
 <summary><b>What this does not show</b></summary>
 
+- **A tuned network.** The five baselines were grid-searched; the network's width, kernel size and learning rate were fixed at their first reasonable values and never searched. The comparison gives the baselines that advantage. The capacity argument above is why I doubt a search closes a 71% gap, but I did not run one.
 - **Generalisation to other noise.** Training and synthetic test noise come from the same generator.
 - **Generalisation to other signals.** One manoeuvre per curve, monotone rise and fall, peak 3–12°, always non-negative. Oscillation, drift and step changes are out of distribution.
 - **A verdict from the real recording.** The target is a smoother. One symptom: zero-phase Kalman is *last* among classical filters on synthetic data (0.0873) and *first* on the real recording (0.0358). Matching a smoother is not removing noise.
